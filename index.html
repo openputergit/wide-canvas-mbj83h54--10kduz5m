@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SUI Breakout Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        #gameCanvas {
+            border: 2px solid #3B82F6;
+            border-radius: 8px;
+            touch-action: none;
+        }
+        .loading {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen p-4">
+    <div class="max-w-4xl mx-auto">
+        <div class="flex flex-col items-center gap-4">
+            <h1 class="text-3xl font-bold text-blue-500 mb-4">SUI Breakout</h1>
+            
+            <!-- Network Status -->
+            <div class="text-sm text-green-400 mb-2">
+                Running on SUI Testnet
+            </div>
+
+            <!-- Wallet Status -->
+            <div id="walletStatus" class="text-yellow-400 text-sm mb-2">
+                Checking wallet status...
+            </div>
+
+            <!-- Game Stats -->
+            <div class="w-full grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+                <div class="bg-slate-800 p-4 rounded-lg text-center">
+                    <h3 class="text-blue-400">Score</h3>
+                    <p id="currentScore" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-lg text-center">
+                    <h3 class="text-blue-400">High Score</h3>
+                    <p id="highScore" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="bg-slate-800 p-4 rounded-lg text-center col-span-2 md:col-span-1">
+                    <h3 class="text-blue-400">Wallet</h3>
+                    <p id="walletAddress" class="text-sm font-mono truncate">Not Connected</p>
+                </div>
+            </div>
+
+            <!-- Wallet Connection -->
+            <div id="walletSection" class="w-full flex flex-col items-center gap-2 mb-4">
+                <button id="connectWallet" class="bg-blue-500 hover:bg-blue-600 px-6 py-2 rounded-lg flex items-center gap-2">
+                    <i class="bi bi-wallet2"></i>
+                    Connect Martian Wallet
+                </button>
+                <a href="https://www.martianwallet.xyz/" target="_blank" class="text-blue-400 text-sm hover:text-blue-300">
+                    Don't have Martian Wallet? Install here
+                </a>
+            </div>
+
+            <!-- Game Canvas -->
+            <canvas id="gameCanvas" class="w-full max-w-2xl bg-slate-800"></canvas>
+
+            <!-- Game Controls -->
+            <div class="flex flex-wrap gap-4 mt-4">
+                <button id="startGame" class="bg-green-500 hover:bg-green-600 px-6 py-2 rounded-lg disabled:opacity-50" disabled>
+                    Start Game
+                </button>
+                <button id="pauseGame" class="bg-yellow-500 hover:bg-yellow-600 px-6 py-2 rounded-lg hidden">
+                    Pause
+                </button>
+            </div>
+
+            <!-- Mobile Controls -->
+            <div class="text-sm text-gray-400 mt-4 text-center">
+                <p>Mobile: Touch and drag to move paddle</p>
+                <p>Desktop: Use ← → arrow keys to move paddle</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Game Variables
+        let canvas = document.getElementById('gameCanvas');
+        let ctx = canvas.getContext('2d');
+        let gameLoop;
+        let isPaused = false;
+        let score = 0;
+        let highScore = 0;
+        let isWalletConnected = false;
+        let walletAddress = '';
+
+        // Initialize game dimensions
+        function setCanvasSize() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = Math.min(canvas.offsetWidth * 0.6, window.innerHeight * 0.5);
+            initializePaddle();
+            initializeBall();
+            initializeBricks();
+        }
+
+        // Game objects
+        let paddle = {
+            width: 80,
+            height: 10,
+            x: 0,
+            y: 0,
+            speed: 7,
+            dx: 0
+        };
+
+        let ball = {
+            x: 0,
+            y: 0,
+            size: 8,
+            speed: 4,
+            dx: 4,
+            dy: -4
+        };
+
+        let bricks = [];
+        const brickRowCount = 5;
+        const brickColumnCount = 9;
+        let brickWidth;
+        let brickHeight = 20;
+        let brickPadding = 4;
+
+        function initializePaddle() {
+            paddle.width = canvas.width * 0.15;
+            paddle.x = (canvas.width - paddle.width) / 2;
+            paddle.y = canvas.height - paddle.height - 10;
+        }
+
+        function initializeBall() {
+            ball.x = canvas.width / 2;
+            ball.y = paddle.y - ball.size;
+        }
+
+        function initializeBricks() {
+            brickWidth = (canvas.width - brickPadding * (brickColumnCount + 1)) / brickColumnCount;
+            bricks = [];
+            for(let i = 0; i < brickRowCount; i++) {
+                bricks[i] = [];
+                for(let j = 0; j < brickColumnCount; j++) {
+                    const x = (j * (brickWidth + brickPadding)) + brickPadding;
+                    const y = (i * (brickHeight + brickPadding)) + brickPadding;
+                    bricks[i][j] = { x, y, status: 1 };
+                }
+            }
+        }
+
+        // Wallet Integration
+        async function checkWallet() {
+            const walletStatus = document.getElementById('walletStatus');
+            
+            if (typeof window.martian === 'undefined') {
+                walletStatus.textContent = 'Please install Martian Wallet';
+                walletStatus.classList.remove('text-yellow-400');
+                walletStatus.classList.add('text-red-400');
+                return false;
+            }
+
+            try {
+                const isConnected = await window.martian.hasPermissions();
+                if (isConnected) {
+                    const accounts = await window.martian.getAccounts();
+                    if (accounts.length > 0) {
+                        walletAddress = accounts[0];
+                        document.getElementById('walletAddress').textContent = 
+                            `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
+                        isWalletConnected = true;
+                        document.getElementById('connectWallet').classList.add('hidden');
+                        document.getElementById('startGame').disabled = false;
+                        walletStatus.classList.add('hidden');
+                        return true;
+                    }
+                }
+                walletStatus.textContent = 'Please connect your wallet';
+                return false;
+            } catch (error) {
+                console.error('Wallet check error:', error);
+                walletStatus.textContent = 'Error checking wallet status';
+                return false;
+            }
+        }
+
+        async function connectWallet() {
+            try {
+                const response = await window.martian.connect();
+                if (response.success) {
+                    walletAddress = response.data;
+                    document.getElementById('walletAddress').textContent = 
+                        `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
+                    isWalletConnected = true;
+                    document.getElementById('connectWallet').classList.add('hidden');
+                    document.getElementById('startGame').disabled = false;
+                    document.getElementById('walletStatus').classList.add('hidden');
+                    await fetchHighScore();
+                }
+            } catch (error) {
+                console.error('Wallet connection error:', error);
+                document.getElementById('walletStatus').textContent = 'Failed to connect wallet';
+            }
+        }
+
+        // Game Logic
+        function drawBall() {
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.size, 0, Math.PI * 2);
+            ctx.fillStyle = '#3B82F6';
+            ctx.fill();
+            ctx.closePath();
+        }
+
+        function drawPaddle() {
+            ctx.beginPath();
+            ctx.rect(paddle.x, paddle.y, paddle.width, paddle.height);
+            ctx.fillStyle = '#3B82F6';
+            ctx.fill();
+            ctx.closePath();
+        }
+
+        function drawBricks() {
+            bricks.forEach((row, i) => {
+                row.forEach((brick, j) => {
+                    if (brick.status === 1) {
+                        ctx.beginPath();
+                        ctx.rect(brick.x, brick.y, brickWidth, brickHeight);
+                        ctx.fillStyle = `hsl(${(i * 30 + j * 10) % 360}, 70%, 60%)`;
+                        ctx.fill();
+                        ctx.closePath();
+                    }
+                });
+            });
+        }
+
+        function movePaddle() {
+            paddle.x += paddle.dx;
+            if (paddle.x < 0) {
+                paddle.x = 0;
+            } else if (paddle.x + paddle.width > canvas.width) {
+                paddle.x = canvas.width - paddle.width;
+            }
+        }
+
+        function moveBall() {
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Wall collision
+            if (ball.x - ball.size < 0 || ball.x + ball.size > canvas.width) {
+                ball.dx *= -1;
+            }
+            if (ball.y - ball.size < 0) {
+                ball.dy *= -1;
+            }
+
+            // Paddle collision
+            if (ball.y + ball.size > paddle.y &&
+                ball.x > paddle.x &&
+                ball.x < paddle.x + paddle.width) {
+                ball.dy = -ball.speed;
+            }
+
+            // Brick collision
+            bricks.forEach((row, i) => {
+                row.forEach((brick, j) => {
+                    if (brick.status === 1) {
+                        if (ball.x > brick.x &&
+                            ball.x < brick.x + brickWidth &&
+                            ball.y > brick.y &&
+                            ball.y < brick.y + brickHeight) {
+                            ball.dy *= -1;
+                            brick.status = 0;
+                            score += 10;
+                            document.getElementById('currentScore').textContent = score;
+                            checkWin();
+                        }
+                    }
+                });
+            });
+
+            // Game over
+            if (ball.y + ball.size > canvas.height) {
+                gameOver();
+            }
+        }
+
+        async function gameOver() {
+            cancelAnimationFrame(gameLoop);
+            if (score > highScore) {
+                highScore = score;
+                document.getElementById('highScore').textContent = highScore;
+                await updateHighScore();
+            }
+            alert(`Game Over! Score: ${score}`);
+            resetGame();
+        }
+
+        function checkWin() {
+            const allBroken = bricks.every(row => 
+                row.every(brick => brick.status === 0)
+            );
+            if (allBroken) {
+                alert('Congratulations! You won!');
+                resetGame();
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawBall();
+            drawPaddle();
+            drawBricks();
+        }
+
+        function update() {
+            if (!isPaused) {
+                movePaddle();
+                moveBall();
+            }
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function resetGame() {
+            score = 0;
+            document.getElementById('currentScore').textContent = score;
+            initializePaddle();
+            initializeBall();
+            initializeBricks();
+            isPaused = true;
+            document.getElementById('startGame').classList.remove('hidden');
+            document.getElementById('pauseGame').classList.add('hidden');
+        }
+
+        // Event Listeners
+        document.getElementById('connectWallet').addEventListener('click', connectWallet);
+        
+        document.getElementById('startGame').addEventListener('click', () => {
+            isPaused = false;
+            gameLoop();
+            document.getElementById('startGame').classList.add('hidden');
+            document.getElementById('pauseGame').classList.remove('hidden');
+        });
+
+        document.getElementById('pauseGame').addEventListener('click', () => {
+            isPaused = !isPaused;
+            document.getElementById('pauseGame').textContent = isPaused ? 'Resume' : 'Pause';
+        });
+
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight') {
+                paddle.dx = paddle.speed;
+            } else if (e.key === 'ArrowLeft') {
+                paddle.dx = -paddle.speed;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                paddle.dx = 0;
+            }
+        });
+
+        // Touch controls
+        let touchX = null;
+        canvas.addEventListener('touchstart', (e) => {
+            touchX = e.touches[0].clientX;
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (touchX === null) return;
+            const deltaX = e.touches[0].clientX - touchX;
+            paddle.x += deltaX * 0.5;
+            touchX = e.touches[0].clientX;
+        });
+
+        canvas.addEventListener('touchend', () => {
+            touchX = null;
+        });
+
+        // Initialize
+        window.onload = async () => {
+            setCanvasSize();
+            window.addEventListener('resize', setCanvasSize);
+            await checkWallet();
+            resetGame();
+        };
+
+        // Blockchain Interaction
+        async function fetchHighScore() {
+            try {
+                const response = await fetch('https://r0c8kgwocscg8gsokogwwsw4.zetaverse.one/moralis', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer qhhUEsgS8UcUAJr2qUiSo32yUqw1',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'read',
+                        table: 'highscores',
+                        userId: walletAddress
+                    })
+                });
+                const data = await response.json();
+                if (data.data && data.data.length > 0) {
+                    highScore = parseInt(data.data[0].score) || 0;
+                    document.getElementById('highScore').textContent = highScore;
+                }
+            } catch (error) {
+                console.error('Error fetching high score:', error);
+            }
+        }
+
+        async function updateHighScore() {
+            try {
+                await fetch('https://r0c8kgwocscg8gsokogwwsw4.zetaverse.one/moralis', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer qhhUEsgS8UcUAJr2qUiSo32yUqw1',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        action: 'update',
+                        table: 'highscores',
+                        userId: walletAddress,
+                        data: { score: highScore }
+                    })
+                });
+            } catch (error) {
+                console.error('Error updating high score:', error);
+            }
+        }
+    </script>
+<script>document.body.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); return }, { passive: false })</script>
+	</body>
+</html>
